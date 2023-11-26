@@ -6,6 +6,7 @@ const mongoose = require("mongoose");
 const bodyParser = require("body-parser");
 const { MongoClient, ServerApiVersion } = require("mongodb");
 const http = require("http");
+const fs = require("fs");
 const { Server } = require("socket.io");
 app.use(cors({ origin: "http://localhost:3000", credentials: true }));
 app.use((req, res, next) => {
@@ -42,7 +43,6 @@ app.get("/query", async (req, res) => {
   }
 });
 
-
 app.get("/", (req, res) => {
   res.sendFile(__dirname + "/index.html");
 });
@@ -50,15 +50,31 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 let databases = [];
 //socket call
-function printSchema(obj, indent) {
-  for (var key in obj) {
-    if (typeof obj[key] !== "function") {
-      console.log(indent + key + ": " + typeof obj[key]);
-      if (typeof obj[key] === "object") {
-        printSchema(obj[key], indent + "\t");
+function printSchemaToFile(obj, indent, filePath, name) {
+  const stream = fs.createWriteStream(filePath, { flags: "a" });
+  function writeToFile(data) {
+    stream.write(data + "\n");
+  }
+  writeToFile(
+    `--------------------------- COLLECTION ${name} SCHEMA ---------------------------`
+  );
+  function traverseObject(obj, currentIndent) {
+    for (const key in obj) {
+      if (typeof obj[key] !== "function") {
+        const line = currentIndent + key + ": " + typeof obj[key];
+        writeToFile(line);
+        if (typeof obj[key] === "object") {
+          traverseObject(obj[key], currentIndent + "\t");
+        }
       }
     }
   }
+
+  traverseObject(obj, indent);
+  writeToFile(
+    "-----------------------------------------------------------------------------------"
+  );
+  stream.end();
 }
 
 io.on("connection", (socket) => {
@@ -67,56 +83,50 @@ io.on("connection", (socket) => {
 
   socket.on("connect-database", async (parameter) => {
     const existUser = databases.findIndex((el) => el.id === socket.id);
-    if (existUser === -1) {
-      console.log("user not found");
-    } else {
-      const client = await new MongoClient(parameter, {
-        serverApi: {
-          version: ServerApiVersion.v1,
-          strict: true,
-          deprecationErrors: true,
-        },
-      });
-      databases[existUser].client = client;
-      console.log("Database connected");
-      socket.emit("db-connected","DB connected");
+    try {
+      if (existUser === -1) {
+        console.log("user not found");
+      } else {
+        const client = await new MongoClient(parameter, {
+          serverApi: {
+            version: ServerApiVersion.v1,
+            strict: true,
+            deprecationErrors: true,
+          },
+        });
+        databases[existUser].client = client;
+        if (client) socket.emit("db-connected", "DB connected...");
+      }
+    } catch (err) {
+      console.log(err);
+      socket.emit("db-connected", "Error connecting to DB...");
     }
   });
 
   socket.on("gpt-prompt", async (query) => {
-    try{
-        const existUser = databases.findIndex((el) => el.id === socket.id);
-    let metadata = await databases[existUser].client
-      .db()
-      .admin()
-      .listDatabases();
+    try {
+      const existUser = databases.findIndex((el) => el.id === socket.id);
+      let metadata = await databases[existUser].client
+        .db()
+        .admin()
+        .listDatabases();
 
-    metadata.databases.map(async (el) => {
-      let res = await databases[existUser].client
-        .db(el.name)
-        .listCollections()
-        .toArray();
-      await res.map(async (col) => {
-        const collectionDetails = await databases[existUser].client
+      metadata.databases.map(async (el) => {
+        let res = await databases[existUser].client
           .db(el.name)
-          .collection(col.name)
-          .findOne();
-        console.log(
-          `--------------------------- COLLECTION ${col.name} SCHEMA ---------------------------`
-        );
-        // console.log(collectionDetails);
-        printSchema(collectionDetails,"");
-        // collectionDetails !== null
-        //   ? console.log(Object.keys(collectionDetails))
-        //   : null;
-        console.log(
-          "-----------------------------------------------------------------------------------"
-        );
+          .listCollections()
+          .toArray();
+        await res.map(async (col) => {
+          const collectionDetails = await databases[existUser].client
+            .db(el.name)
+            .collection(col.name)
+            .findOne();
+          const outputFilePath = "schema_output.txt";
+          printSchemaToFile(collectionDetails, "", outputFilePath, col.name);
+        });
       });
-    });
-    }
-    catch(err){
-        console.log("oops ! error equired pls refresh the page");
+    } catch (err) {
+      console.log("oops ! error equired pls refresh the page");
     }
   });
 
@@ -125,7 +135,6 @@ io.on("connection", (socket) => {
     console.log(`user with id: ${socket.id} disconnected`);
   });
 });
-// setInterval(()=>{console.log(databases);},1000)
 server.listen(5000, (err) =>
   err
     ? console.log("server error")
